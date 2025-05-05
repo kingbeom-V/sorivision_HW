@@ -59,21 +59,55 @@ def send_http(lat, lon):
     except Exception as e:
         print(f"❌ 전송 실패: {e}")
 
-def burst_send_gps():
-    for _ in range(10):
-        with location_lock:
-            lat, lon = latest_location['lat'], latest_location['lon']
-        if lat and lon:
-            send_http(lat, lon)
+def burst_send_images():
+    for i in range(10):
+        img_bytes = capture_image_bytes()
+        if img_bytes:
+            try:
+                files = {'image': (f'frame_{i}.jpg', img_bytes, 'image/jpeg')}
+                data = {'device_id': device_id}
+                res = requests.post("http://your.server.com/api/v1/hw/emergency_img", files=files, data=data)
+                print(f"📸 이미지 전송 {i+1}/10, 상태: {res.status_code}")
+            except Exception as e:
+                print(f"❌ 이미지 전송 실패: {e}")
+        else:
+            print(f"⚠️ 이미지 캡처 실패 ({i+1}/10)")
         time.sleep(1)
 
+
+def get_emergency_id():
+    try:
+        res = requests.post("http://your.server.com/api/v1/hw/get_emergency_id", json={
+            'device_id': device_id,
+        })
+        if res.status_code == 200:
+            data = res.json()  # 응답 JSON 파싱
+            emergency_id = data.get("emergency_id")
+            if emergency_id:
+                print(f"✅ Emergency ID: {emergency_id}")
+                return emergency_id
+            else:
+                print("⚠️ 응답에 'emergency_id' 없음")
+        else:
+            print(f"❌ 상태 코드 오류: {res.status_code}")
+    except Exception as e:
+        print(f"❌ 전송 실패: {e}")
+    
+    return None  # 예외 또는 실패 시 명시적 반환
+
+
+
 # === 공통 기능 ===
-def capture_image(filename='capture.jpg'):
+def capture_image_bytes():
     cap = cv2.VideoCapture(0)
     ret, frame = cap.read()
-    if ret:
-        cv2.imwrite(filename, frame)
     cap.release()
+    if ret:
+        success, buffer = cv2.imencode('.jpg', frame)
+        if success:
+            return io.BytesIO(buffer.tobytes())
+    return None
+
 
 def play_mp3_binary(mp3_bytes):
     set_audio_output_to_jack()
@@ -93,23 +127,23 @@ def play_local_mp3(filepath):
 
 # === 풍경 설명 ===
 def describe_landscape():
-    capture_image()
+    img_bytes = capture_image_bytes()
     with location_lock:
         lat, lon = latest_location['lat'], latest_location['lon']
-    if lat and lon:
+    if img_bytes and lat and lon:
         try:
-            with open('capture.jpg', 'rb') as img_file:
-                files = {'image': img_file}
-                data = {'device_id': device_id}
-                res = requests.post("http://your.server.com/api/v1/hw/auto_describe", files=files, data=data)
-                if res.status_code == 200:
-                    play_mp3_binary(res.content)
-                else:
-                    print(f"⚠️ 서버 오류: {res.status_code}")
+            files = {'image': ('capture.jpg', img_bytes, 'image/jpeg')}
+            data = {'device_id': device_id}
+            res = requests.post("http://your.server.com/api/v1/hw/auto_describe", files=files, data=data)
+            if res.status_code == 200:
+                play_mp3_binary(res.content)
+            else:
+                print(f"⚠️ 서버 오류: {res.status_code}")
         except Exception as e:
             print(f"❌ 요청 실패: {e}")
     else:
-        print("⚠️ GPS 좌표 없음")
+        print("⚠️ GPS 좌표 없음 또는 이미지 캡처 실패")
+
 
 # === 프롬프트 응답 ===
 def recognize_speech():
@@ -128,25 +162,28 @@ def recognize_speech():
     return None
 
 def respond_to_prompt():
-    capture_image()
+    img_bytes = capture_image_bytes()
     prompt_text = recognize_speech()
+    if not img_bytes:
+        print("⚠️ 이미지 캡처 실패")
+        return
     if not prompt_text:
         print("⚠️ 프롬프트가 비어 있어 전송하지 않음")
         return
     try:
-        with open('capture.jpg', 'rb') as img_file:
-            files = {'image': img_file}
-            data = {
-                'device_id': device_id,
-                'prompt': prompt_text
-            }
-            res = requests.post("http://your.server.com//api/v1/hw/user_qa", files=files, data=data)
-            if res.status_code == 200:
-                play_mp3_binary(res.content)
-            else:
-                print(f"⚠️ 서버 오류: {res.status_code}")
+        files = {'image': ('capture.jpg', img_bytes, 'image/jpeg')}
+        data = {
+            'device_id': device_id,
+            'prompt': prompt_text
+        }
+        res = requests.post("http://your.server.com//api/v1/hw/user_qa", files=files, data=data)
+        if res.status_code == 200:
+            play_mp3_binary(res.content)
+        else:
+            print(f"⚠️ 서버 오류: {res.status_code}")
     except Exception as e:
         print(f"❌ 요청 실패: {e}")
+
 
 # === IR 처리 ===
 def handle_key_pattern(count, duration):
@@ -158,7 +195,11 @@ def handle_key_pattern(count, duration):
     elif count == 2:
         respond_to_prompt()
     elif count == 5:
-        burst_send_gps()
+        emegency_id=get_emergency_id()
+        if emegency_id:
+            burst_send_images(emegency_id)
+        else :
+            print("emergency_id 없음")
     else:
         print(f"❓ 미정의 입력: {count}회, {duration:.2f}s")
 
