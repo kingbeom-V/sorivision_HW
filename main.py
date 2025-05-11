@@ -2,7 +2,7 @@ import serial
 import threading
 import time
 import requests
-import lirc
+import RPi.GPIO as GPIO
 import cv2
 from pydub import AudioSegment
 from pydub.playback import play
@@ -11,10 +11,16 @@ import os
 import speech_recognition as sr  # ✅ 음성 인식 라이브러리
 
 # === 전역 설정 ===
+SERVER_BASE_URL = "http://your.server.com/api/v1/hw"
 LOCAL_MP3_PATH = "/home/pi/sounds/help.mp3"
 latest_location = {'lat': None, 'lon': None}
 location_lock = threading.Lock()
 device_id = "raspi-001"
+
+# === GPIO 설정 ===
+IR_PIN = 19
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(IR_PIN, GPIO.IN)
 
 # === GPS 파싱 ===
 def parse_gprmc(sentence):
@@ -47,10 +53,40 @@ def gps_reader(ser):
                         latest_location['lat'], latest_location['lon'] = lat, lon
         time.sleep(1)
 
+# === IR 핸들러 스레드 ===
+def ir_handler():
+    press_time = None
+    press_count = 0
+    last_press = 0
+    while True:
+        if GPIO.input(IR_PIN) == 0:
+            now = time.time()
+            if press_time is None:
+                press_time = now
+                last_press = now
+                press_count = 1
+            elif now - last_press <= 0.8:
+                press_count += 1
+                last_press = now
+            else:
+                handle_key_pattern(press_count, last_press - press_time)
+                press_time = now
+                last_press = now
+                press_count = 1
+
+        # 길게 눌림 처리
+        if press_time and time.time() - last_press > 1.0:
+            duration = last_press - press_time
+            handle_key_pattern(press_count, duration)
+            press_time = None
+            press_count = 0
+
+        time.sleep(0.05)
+
 # === HTTP 전송 ===
 def send_http(lat, lon):
     try:
-        res = requests.post("http://your.server.com//api/v1/hw/gps", json={
+        res = requests.post(f"{SERVER_BASE_URL}/gps", json={
             'device_id': device_id,
             'lat': lat,
             'lon': lon
@@ -59,14 +95,15 @@ def send_http(lat, lon):
     except Exception as e:
         print(f"❌ 전송 실패: {e}")
 
-def burst_send_images():
+# === 이미지 전송 ===
+def burst_send_images(emergency_id):
     for i in range(10):
         img_bytes = capture_image_bytes()
         if img_bytes:
             try:
                 files = {'image': (f'frame_{i}.jpg', img_bytes, 'image/jpeg')}
-                data = {'device_id': device_id}
-                res = requests.post("http://your.server.com/api/v1/hw/emergency_img", files=files, data=data)
+                data = {'device_id': device_id, 'emergency_id': emergency_id}
+                res = requests.post(f"{SERVER_BASE_URL}/emergency_img", files=files, data=data)
                 print(f"📸 이미지 전송 {i+1}/10, 상태: {res.status_code}")
             except Exception as e:
                 print(f"❌ 이미지 전송 실패: {e}")
@@ -74,10 +111,10 @@ def burst_send_images():
             print(f"⚠️ 이미지 캡처 실패 ({i+1}/10)")
         time.sleep(1)
 
-
+# === Emergency ID 요청 ===
 def get_emergency_id():
     try:
-        res = requests.post("http://your.server.com/api/v1/hw/get_emergency_id", json={
+        res = requests.post(f"{SERVER_BASE_URL}/get_emergency_id", json={
             'device_id': device_id,
         })
         if res.status_code == 200:
@@ -92,10 +129,7 @@ def get_emergency_id():
             print(f"❌ 상태 코드 오류: {res.status_code}")
     except Exception as e:
         print(f"❌ 전송 실패: {e}")
-    
     return None  # 예외 또는 실패 시 명시적 반환
-
-
 
 # === 공통 기능 ===
 def capture_image_bytes():
@@ -107,7 +141,6 @@ def capture_image_bytes():
         if success:
             return io.BytesIO(buffer.tobytes())
     return None
-
 
 def play_mp3_binary(mp3_bytes):
     set_audio_output_to_jack()
@@ -134,7 +167,7 @@ def describe_landscape():
         try:
             files = {'image': ('capture.jpg', img_bytes, 'image/jpeg')}
             data = {'device_id': device_id}
-            res = requests.post("http://your.server.com/api/v1/hw/auto_describe", files=files, data=data)
+            res = requests.post(f"{SERVER_BASE_URL}/auto_describe", files=files, data=data)
             if res.status_code == 200:
                 play_mp3_binary(res.content)
             else:
@@ -143,7 +176,6 @@ def describe_landscape():
             print(f"❌ 요청 실패: {e}")
     else:
         print("⚠️ GPS 좌표 없음 또는 이미지 캡처 실패")
-
 
 # === 프롬프트 응답 ===
 def recognize_speech():
@@ -161,6 +193,7 @@ def recognize_speech():
         print(f"❌ 음성 인식 API 오류: {e}")
     return None
 
+# === 프롬프트 처리 ===
 def respond_to_prompt():
     img_bytes = capture_image_bytes()
     prompt_text = recognize_speech()
@@ -176,7 +209,7 @@ def respond_to_prompt():
             'device_id': device_id,
             'prompt': prompt_text
         }
-        res = requests.post("http://your.server.com//api/v1/hw/user_qa", files=files, data=data)
+        res = requests.post(f"{SERVER_BASE_URL}/user_qa", files=files, data=data)
         if res.status_code == 200:
             play_mp3_binary(res.content)
         else:
@@ -184,6 +217,13 @@ def respond_to_prompt():
     except Exception as e:
         print(f"❌ 요청 실패: {e}")
 
+# === 긴급 ID 요청 및 이미지 전송 ===
+def handle_emergency():
+    emergency_id = get_emergency_id()
+    if emergency_id:
+        burst_send_images(emergency_id)
+    else:
+        print("❌ 긴급 ID 요청 실패")
 
 # === IR 처리 ===
 def handle_key_pattern(count, duration):
@@ -195,45 +235,11 @@ def handle_key_pattern(count, duration):
     elif count == 2:
         respond_to_prompt()
     elif count == 5:
-        emegency_id=get_emergency_id()
-        if emegency_id:
-            burst_send_images(emegency_id)
-        else :
-            print("emergency_id 없음")
+        handle_emergency()
     else:
         print(f"❓ 미정의 입력: {count}회, {duration:.2f}s")
 
-# === IR 리스너 스레드 ===
-def ir_listener():
-    lirc.init("myprogram", blocking=False)
-    press_time = None
-    press_count = 0
-    last_press = 0
 
-    while True:
-        codes = lirc.nextcode()
-        if codes and codes[0] == "KEY_1":
-            now = time.time()
-            if press_time is None:
-                press_time = now
-                last_press = now
-                press_count = 1
-            elif now - last_press <= 0.8:
-                press_count += 1
-                last_press = now
-            else:
-                handle_key_pattern(press_count, last_press - press_time)
-                press_time = now
-                last_press = now
-                press_count = 1
-
-        if press_time and time.time() - last_press > 1.0:
-            duration = last_press - press_time
-            handle_key_pattern(press_count, duration)
-            press_time = None
-            press_count = 0
-
-        time.sleep(0.05)
 
 # === 메인 실행 ===
 if __name__ == "__main__":
@@ -246,11 +252,12 @@ if __name__ == "__main__":
     print(f"✅ 기기 ID: {device_id}")
 
     threading.Thread(target=gps_reader, args=(ser,), daemon=True).start()
-    threading.Thread(target=ir_listener, daemon=True).start()
+    threading.Thread(target=ir_handler, daemon=True).start()
 
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         ser.close()
+        GPIO.cleanup()
         print("🛑 종료됨")
