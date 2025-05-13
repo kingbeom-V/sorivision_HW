@@ -21,7 +21,7 @@ LOCAL_MP3_PATH = os.getenv("LOCAL_MP3_PATH")
 
 latest_location = {'lat': None, 'lon': None}
 location_lock = threading.Lock()
-device_id = "raspi-001"
+
 
 # === GPIO 설정 ===
 IR_PIN = 19
@@ -108,7 +108,7 @@ def send_http(lat=None, lon=None):
 
     try:
         res = requests.post(f"{SERVER_BASE_URL}/gps", json={
-            'device_id': device_id,
+            'device_id': DEVICE_ID,
             'lat': lat,
             'lon': lon
         })
@@ -123,7 +123,7 @@ def burst_send_images(emergency_id):
         if img_bytes:
             try:
                 files = {'image': (f'frame_{i}.jpg', img_bytes, 'image/jpeg')}
-                data = {'device_id': device_id, 'emergency_id': emergency_id}
+                data = {'device_id': DEVICE_ID, 'emergency_id': emergency_id}
                 res = requests.post(f"{SERVER_BASE_URL}/emergency_img", files=files, data=data)
                 print(f"📸 이미지 전송 {i+1}/10, 상태: {res.status_code}")
             except Exception as e:
@@ -136,7 +136,7 @@ def burst_send_images(emergency_id):
 def get_emergency_id():
     try:
         res = requests.post(f"{SERVER_BASE_URL}/get_emergency_id", json={
-            'device_id': device_id,
+            'device_id': DEVICE_ID,
         })
         if res.status_code == 200:
             data = res.json()  # 응답 JSON 파싱
@@ -187,7 +187,7 @@ def describe_landscape():
     if img_bytes and lat and lon:
         try:
             files = {'image': ('capture.jpg', img_bytes, 'image/jpeg')}
-            data = {'device_id': device_id}
+            data = {'device_id': DEVICE_ID}
             res = requests.post(f"{SERVER_BASE_URL}/auto_describe", files=files, data=data)
             if res.status_code == 200:
                 play_mp3_binary(res.content)
@@ -227,7 +227,7 @@ def respond_to_prompt():
     try:
         files = {'image': ('capture.jpg', img_bytes, 'image/jpeg')}
         data = {
-            'device_id': device_id,
+            'device_id': DEVICE_ID,
             'prompt': prompt_text
         }
         res = requests.post(f"{SERVER_BASE_URL}/user_qa", files=files, data=data)
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         print(f"❌ 시리얼 포트 오류: {e}")
         exit()
 
-    print(f"✅ 기기 ID: {device_id}")
+    print(f"✅ 기기 ID: {DEVICE_ID}")
 
     threading.Thread(target=gps_reader, args=(ser,), daemon=True).start()  # GPS 읽기 스레드
     threading.Thread(target=ir_handler, daemon=True).start()  # IR 리모컨 처리 스레드
