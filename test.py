@@ -11,7 +11,6 @@ import io
 import os
 import speech_recognition as sr  # ✅ 음성 인식 라이브러리
 import random
-
 # === 전역 설정 ===
 # === .env 파일 로드 ===
 load_dotenv()
@@ -19,7 +18,7 @@ load_dotenv()
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL")
 DEVICE_ID = os.getenv("DEVICE_ID")
 LOCAL_MP3_PATH = os.getenv("LOCAL_MP3_PATH")
-a
+
 latest_location = {'lat': None, 'lon': None}
 location_lock = threading.Lock()
 device_id = "raspi-001"
@@ -100,8 +99,13 @@ def periodic_gps_sender(interval=10):
         time.sleep(interval)
 
 
-# === HTTP 전송 ===
-def send_http(lat, lon):
+# === HTTP 전송 (임의 좌표 범위) ===
+def send_http(lat=None, lon=None):
+    # 기본 좌표 범위 설정 (37.30041, 127.0397 근처)
+    if lat is None or lon is None:
+        lat = round(37.30041 + random.uniform(-0.0005, 0.0005), 6)
+        lon = round(127.0397 + random.uniform(-0.0005, 0.0005), 6)
+
     try:
         res = requests.post(f"{SERVER_BASE_URL}/gps", json={
             'device_id': device_id,
@@ -256,9 +260,6 @@ def handle_key_pattern(count, duration):
     else:
         print(f"❓ 미정의 입력: {count}회, {duration:.2f}s")
 
-
-
-# === 메인 실행 ===
 if __name__ == "__main__":
     try:
         ser = serial.Serial('/dev/serial0', 9600, timeout=1)
@@ -268,14 +269,60 @@ if __name__ == "__main__":
 
     print(f"✅ 기기 ID: {device_id}")
 
-    threading.Thread(target=gps_reader, args=(ser,), daemon=True).start() # GPS 읽기 스레드
-    threading.Thread(target=ir_handler, daemon=True).start() # IR 리모컨 처리 스레드
-    threading.Thread(target=periodic_gps_sender, args=(10,), daemon=True).start()  # 🔄 GPS 전송 스레드 , args에 interval값
+    threading.Thread(target=gps_reader, args=(ser,), daemon=True).start()  # GPS 읽기 스레드
+    threading.Thread(target=ir_handler, daemon=True).start()  # IR 리모컨 처리 스레드
+    threading.Thread(target=periodic_gps_sender, args=(10,), daemon=True).start()  # 🔄 GPS 전송 스레드
 
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        ser.close()
-        GPIO.cleanup()
-        print("🛑 종료됨")
+    # === 기능 테스트 메뉴 ===
+    while True:
+        print("\n🔧 기능 테스트 메뉴")
+        print("1. get_emergency_id()")
+        print("2. burst_send_images()")
+        print("3. send_http()")
+        print("4. describe_landscape()")
+        print("5. respond_to_prompt()")
+        print("6. handle_emergency()")
+        print("0. 종료")
+        
+        choice = input("👉 테스트할 기능 선택 (0-6): ").strip()
+
+        if choice == "1":
+            print("\n🆘 get_emergency_id 테스트")
+            emergency_id = get_emergency_id()
+            print(f"ID: {emergency_id}")
+
+        elif choice == "2":
+            print("\n📸 burst_send_images 테스트")
+            emergency_id = get_emergency_id()
+            if emergency_id:
+                burst_send_images(emergency_id)
+
+        elif choice == "3":
+            print("\n📡 send_http 테스트")
+            with location_lock:
+                lat, lon = latest_location['lat'], latest_location['lon']
+            if lat is not None and lon is not None:
+                send_http(lat, lon)
+            else:
+                print("⚠️ 위치 정보 없음")
+
+        elif choice == "4":
+            print("\n🗺️ describe_landscape 테스트")
+            describe_landscape()
+
+        elif choice == "5":
+            print("\n🎤 respond_to_prompt 테스트")
+            respond_to_prompt()
+
+        elif choice == "6":
+            print("\n🚨 handle_emergency 테스트")
+            handle_emergency()
+
+        elif choice == "0":
+            ser.close()
+            GPIO.cleanup()
+            print("🛑 종료됨")
+            break
+
+        else:
+            print("❓ 잘못된 입력입니다. 다시 선택해주세요.")
