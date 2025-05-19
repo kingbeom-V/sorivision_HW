@@ -5,14 +5,12 @@ import time
 import requests
 import RPi.GPIO as GPIO
 import cv2
+from pydub import AudioSegment
+from pydub.playback import play
 import io
 import os
-import speech_recognition as sr
+import speech_recognition as sr  # ✅ 음성 인식 라이브러리
 import random
-import subprocess
-import wave
-import simpleaudio as sa
-from pydub import AudioSegment
 # === 전역 설정 ===
 # === .env 파일 로드 ===
 load_dotenv()
@@ -29,50 +27,6 @@ location_lock = threading.Lock()
 IR_PIN = 19
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(IR_PIN, GPIO.IN)
-
-# === 기본 출력 장치 설정 ===
-def set_audio_output_to_jack(volume=100):
-    # 3.5mm 잭으로 강제 출력
-    os.system("amixer cset numid=3 1")
-    os.environ["ALSA_CARD"] = "Headphones"
-    set_volume(volume)
-
-def set_volume(level=100):
-    try:
-        # 볼륨 설정
-        subprocess.run(["amixer", "set", "Master", f"{level}%"], check=True)
-        subprocess.run(["amixer", "set", "Headphones", f"{level}%"], check=True)
-
-        # 음소거 해제
-        subprocess.run(["amixer", "set", "Master", "unmute"], check=True)
-        subprocess.run(["amixer", "set", "Headphones", "unmute"], check=True)
-
-        print(f"🔊 볼륨 설정 완료: {level}%")
-    except subprocess.CalledProcessError as e:
-        print(f"⚠️ 볼륨 설정 실패: {e}")
-
-# === WAV 파일로 변환 후 재생 ===
-def play_wav_bytes(wav_bytes):
-    try:
-        # 임시 WAV 파일 생성
-        with wave.open(io.BytesIO(wav_bytes), 'rb') as wav_file:
-            audio_data = wav_file.readframes(wav_file.getnframes())
-            play_obj = sa.play_buffer(audio_data, wav_file.getnchannels(), wav_file.getsampwidth(), wav_file.getframerate())
-            play_obj.wait_done()
-            print("🔊 WAV 파일 재생 완료")
-    except Exception as e:
-        print(f"⚠️ WAV 파일 재생 실패: {e}")
-
-# === MP3를 WAV로 변환 ===
-def mp3_to_wav(mp3_bytes):
-    try:
-        audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
-        wav_io = io.BytesIO()
-        audio.export(wav_io, format="wav")
-        return wav_io.getvalue()
-    except Exception as e:
-        print(f"⚠️ MP3 → WAV 변환 실패: {e}")
-        return None
 
 # === GPS 파싱 ===
 def parse_gprmc(sentence):
@@ -210,23 +164,16 @@ def capture_image_bytes():
     return None
 
 def play_mp3_binary(mp3_bytes):
-    set_audio_output_to_jack(80)
-    set_audio_output()
+    set_audio_output_to_jack()
     audio = AudioSegment.from_file(io.BytesIO(mp3_bytes), format="mp3")
     play(audio)
 
-def set_audio_output_to_jack(volume=100):
-    # 3.5mm 잭으로 강제 출력
-    os.system("amixer cset numid=3 1")  # 기본 오디오 출력 설정
-    os.environ["ALSA_CARD"] = "Headphones"  # 기본 장치 설정
-
-    # 볼륨 설정
-    set_volume(volume)
-
+def set_audio_output_to_jack():
+    os.system("amixer cset numid=3 1")
 
 def play_local_mp3(filepath):
     try:
-        set_audio_output_to_jack(80)
+        set_audio_output_to_jack()
         audio = AudioSegment.from_file(filepath, format="mp3")
         play(audio)
     except Exception as e:
@@ -250,7 +197,8 @@ def describe_landscape():
             print(f"❌ 요청 실패: {e}")
     else:
         print("⚠️ GPS 좌표 없음 또는 이미지 캡처 실패")
-# === 음성 인식 ===
+
+# === 프롬프트 응답 ===
 def recognize_speech():
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
@@ -284,9 +232,7 @@ def respond_to_prompt():
         }
         res = requests.post(f"{SERVER_BASE_URL}/user_qa", files=files, data=data)
         if res.status_code == 200:
-            wav_bytes = mp3_to_wav(res.content)
-            if wav_bytes:
-                play_wav_bytes(wav_bytes)
+            play_mp3_binary(res.content)
         else:
             print(f"⚠️ 서버 오류: {res.status_code}")
     except Exception as e:
@@ -299,21 +245,6 @@ def handle_emergency():
         burst_send_images(emergency_id)
     else:
         print("❌ 긴급 ID 요청 실패")
-
-def set_volume(level=100):
-    # 볼륨 설정 (0 ~ 100)
-    try:
-        # 볼륨 설정
-        subprocess.run(["amixer", "set", "PCM", f"{level}%"], check=True)
-        subprocess.run(["amixer", "set", "Master", f"{level}%"], check=True)
-
-        # 음소거 해제
-        subprocess.run(["amixer", "set", "PCM", "unmute"], check=True)
-        subprocess.run(["amixer", "set", "Master", "unmute"], check=True)
-
-        print(f"🔊 볼륨 설정 완료: {level}%")
-    except subprocess.CalledProcessError as e:
-        print(f"⚠️ 볼륨 설정 실패: {e}")
 
 # === IR 처리 ===
 def handle_key_pattern(count, duration):
@@ -329,19 +260,69 @@ def handle_key_pattern(count, duration):
     else:
         print(f"❓ 미정의 입력: {count}회, {duration:.2f}s")
 
-# === 기능 테스트 ===
 if __name__ == "__main__":
-    set_audio_output_to_jack(80)
-
-    # 기본 테스트
-    print("🔧 기본 기능 테스트")
-    test_wav = "/usr/share/sounds/alsa/Front_Center.wav"
     try:
-        with open(test_wav, "rb") as f:
-            play_wav_bytes(f.read())
+        ser = serial.Serial('/dev/serial0', 9600, timeout=1)
     except Exception as e:
-        print(f"❌ WAV 파일 재생 실패: {e}")
+        print(f"❌ 시리얼 포트 오류: {e}")
+        exit()
 
-    # 프롬프트 응답 테스트
-    print("\n🎤 프롬프트 응답 테스트")
-    respond_to_prompt()
+    print(f"✅ 기기 ID: {DEVICE_ID}")
+
+    threading.Thread(target=gps_reader, args=(ser,), daemon=True).start()  # GPS 읽기 스레드
+    threading.Thread(target=ir_handler, daemon=True).start()  # IR 리모컨 처리 스레드
+    threading.Thread(target=periodic_gps_sender, args=(10,), daemon=True).start()  # 🔄 GPS 전송 스레드
+
+    # === 기능 테스트 메뉴 ===
+    while True:
+        print("\n🔧 기능 테스트 메뉴")
+        print("1. get_emergency_id()")
+        print("2. burst_send_images()")
+        print("3. send_http()")
+        print("4. describe_landscape()")
+        print("5. respond_to_prompt()")
+        print("6. handle_emergency()")
+        print("0. 종료")
+        
+        choice = input("👉 테스트할 기능 선택 (0-6): ").strip()
+
+        if choice == "1":
+            print("\n🆘 get_emergency_id 테스트")
+            emergency_id = get_emergency_id()
+            print(f"ID: {emergency_id}")
+
+        elif choice == "2":
+            print("\n📸 burst_send_images 테스트")
+            emergency_id = get_emergency_id()
+            if emergency_id:
+                burst_send_images(emergency_id)
+
+        elif choice == "3":
+            print("\n📡 send_http 테스트")
+            with location_lock:
+                lat, lon = latest_location['lat'], latest_location['lon']
+            if lat is not None and lon is not None:
+                send_http(lat, lon)
+            else:
+                print("⚠️ 위치 정보 없음")
+
+        elif choice == "4":
+            print("\n🗺️ describe_landscape 테스트")
+            describe_landscape()
+
+        elif choice == "5":
+            print("\n🎤 respond_to_prompt 테스트")
+            respond_to_prompt()
+
+        elif choice == "6":
+            print("\n🚨 handle_emergency 테스트")
+            handle_emergency()
+
+        elif choice == "0":
+            ser.close()
+            GPIO.cleanup()
+            print("🛑 종료됨")
+            break
+
+        else:
+            print("❓ 잘못된 입력입니다. 다시 선택해주세요.")
